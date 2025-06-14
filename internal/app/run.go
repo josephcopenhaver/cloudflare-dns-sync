@@ -54,6 +54,30 @@ func run(ctx context.Context, logger *slog.Logger, cfg config) error {
 		slog.String("interval", syncInterval.String()),
 	)
 
+	hc := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	defer hc.CloseIdleConnections()
+
+	ticker := time.NewTicker(syncInterval)
+	tickTime := time.Now()
+	defer ticker.Stop()
+
+	var consecutiveFailCount int
+
+	syncFunc := newSyncFunc(&cfg, hc, func(r *http.Request) *http.Request {
+		r.Header.Set("User-Agent", "github.com---josephcopenhaver--cloudflare-dns-sync/1.0")
+		return r
+	})
+
+	if err := ctx.Err(); err != nil {
+		logger.LogAttrs(ctx, slog.LevelWarn,
+			"service start canceled",
+			slog.String("reason", err.Error()),
+		)
+		return nil
+	}
+
 	defer func() {
 		if r := recover(); r != nil {
 			defer panic(r)
@@ -68,40 +92,14 @@ func run(ctx context.Context, logger *slog.Logger, cfg config) error {
 		)
 	}()
 
-	doneChan := ctx.Done()
-
-	hc := &http.Client{
-		Timeout: 10 * time.Second,
-	}
-	defer hc.CloseIdleConnections()
-
-	ticker := time.NewTicker(syncInterval)
-	tickTime := time.Now()
-	defer ticker.Stop()
-
-	var consecutiveFailCount int
-
-	syncFunc := newSyncFunc(ctx, logger, &cfg, hc, func(r *http.Request) *http.Request {
-		r.Header.Set("User-Agent", "github.com---josephcopenhaver--cloudflare-dns-sync/1.0")
-		return r
-	})
-
 	logger.LogAttrs(ctx, slog.LevelInfo,
 		"service starting",
 		slog.String("interval", syncInterval.String()),
 	)
 
-	if err := ctx.Err(); err != nil {
-		logger.LogAttrs(ctx, slog.LevelWarn,
-			"service starting canceled",
-			slog.String("reason", err.Error()),
-		)
-		return nil
-	}
-
+	doneChan := ctx.Done()
 	for {
-		if err := syncFunc(tickTime); err != nil {
-
+		if err := syncFunc(ctx, logger, tickTime); err != nil {
 			logger.LogAttrs(ctx, slog.LevelError,
 				"sync fail",
 				slog.Int("consecutive_fail_count", consecutiveFailCount),
@@ -125,7 +123,7 @@ func run(ctx context.Context, logger *slog.Logger, cfg config) error {
 	}
 }
 
-func newSyncFunc(ctx context.Context, logger *slog.Logger, cfg *config, hc *http.Client, reqDeco func(*http.Request) *http.Request) func(time.Time) error {
+func newSyncFunc(cfg *config, hc *http.Client, reqDeco func(*http.Request) *http.Request) func(context.Context, *slog.Logger, time.Time) error {
 	apiToken := cfg.ApiToken
 
 	var reqBodyStrPrefix string
@@ -152,7 +150,7 @@ func newSyncFunc(ctx context.Context, logger *slog.Logger, cfg *config, hc *http
 
 	var oldIP string
 
-	return func(t time.Time) error {
+	return func(ctx context.Context, logger *slog.Logger, t time.Time) error {
 		logger.LogAttrs(ctx, slog.LevelInfo,
 			"sync running",
 			slog.Int64("tick_time", t.UnixNano()),
