@@ -118,6 +118,18 @@ func run(ctx context.Context, logger *slog.Logger, cfg config) error {
 		select {
 		case <-doneChan:
 			return nil
+		default:
+		}
+
+		// play nice with the network resources we're talking to
+		// and close idle connections while we wait for the next tick
+		//
+		// the ticks are surely going to exceed the timeout of the http.Client in all cases
+		hc.CloseIdleConnections()
+
+		select {
+		case <-doneChan:
+			return nil
 		case tickTime = <-ticker.C:
 		}
 	}
